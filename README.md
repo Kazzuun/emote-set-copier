@@ -3,11 +3,6 @@
 Command line tool to copy 7tv emote sets.
 
 
-## Requirements
-
-Python (preferably version >=3.10) to make sure it works.
-
-
 ## Usage
 
 Download a fitting executable from [releases](https://github.com/Kazzuun/emote-set-copier/releases/latest).
@@ -32,7 +27,7 @@ Notice that the copying process might take a long time if there are multiple emo
 
 ## Warning
 
-The script asks if you want to save the token in a file. it will save it there in plain text which can be dangerous. Only choose yes if you are sure this is fine.
+The script asks if you want to save the token in a file. It will save it there in plain text which can be dangerous. Only choose yes if you are sure this is fine.
 
 
 ## Finding the token
