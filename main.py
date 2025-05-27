@@ -14,7 +14,7 @@ from app.console import (
 )
 from app.errors import CapacityError, ConflictError, EmoteNotFoundError, OtherError, RestError, UnprivilegedError
 from app.models import EmoteSet, EmoteSetEmote
-from app.utils import load_token, save_token, is_valid_id, user_id_from_token
+from app.utils import load_token, save_token, is_valid_id, user_id_from_token, TOKEN_FILE_PATH
 
 
 def get_user_token_and_id() -> tuple[str, str]:
@@ -25,14 +25,13 @@ def get_user_token_and_id() -> tuple[str, str]:
     Returns:
         A tuple containing the user's 7tv token and their user ID.
     """
-    token_file_name = "token.txt"
-    token = load_token(token_file_name)
+    token = load_token()
 
     if token is not None:
-        print_info(f"Loading token from {token_file_name}...")
+        print_info(f"Existing token found in [bold green]'{TOKEN_FILE_PATH}'[/bold green].")
         seventv_user_id = user_id_from_token(token)
         if seventv_user_id is not None:
-            print_success(f"Token loaded from {token_file_name}.")
+            print_success(f"Token loaded from [bold green]'{TOKEN_FILE_PATH}'[/bold green].")
             return (token, seventv_user_id)
 
     while True:
@@ -45,10 +44,10 @@ def get_user_token_and_id() -> tuple[str, str]:
         if seventv_user_id is None:
             continue
 
-        save = ask_confirm(f"Save the token to {token_file_name} for easy access?")
+        save = ask_confirm(f"Save the token to [bold green]'{TOKEN_FILE_PATH}'[/bold green] for easy access?", default=False)
         if save:
-            save_token(token, token_file_name)
-            print_success(f"Token saved to {token_file_name}.")
+            save_token(token)
+            print_success(f"Token saved to [bold green]'{TOKEN_FILE_PATH}'[/bold green].")
         else:
             print_info("Token not saved.")
 
@@ -64,6 +63,10 @@ def get_origin_emote_set() -> EmoteSet:
     """
     while True:
         emote_set_id = ask_question("What is the ID of the emote set you want to copy?")
+        if emote_set_id == "":
+            print_warning("Please provide an ID to copy from.")
+            continue
+
         if not is_valid_id(emote_set_id):
             print_warning("Invalid ID format. Please provide a valid ID.")
             continue
@@ -93,6 +96,10 @@ def get_target_emote_set(origin_set: EmoteSet, seventv_user_id: str) -> EmoteSet
     """
     while True:
         target_emote_set_id = ask_question("What is the ID of the emote set you want to copy into?")
+        if target_emote_set_id == "":
+            print_warning("Please provide an ID to copy into.")
+            continue
+
         if not is_valid_id(target_emote_set_id):
             print_warning("Invalid ID format. Please provide a valid ID.")
             continue
@@ -173,8 +180,8 @@ def process_emotes_to_copy(from_emote_set: EmoteSet, target_emote_set: EmoteSet)
         print_info(
             f"The number of emotes to be copied exceeds the space available in the target emote set ({emotes_to_copy}>{space_available})."
         )
-        only_fitting = ask_confirm("Only add emotes that fit?", default=True)
-        if only_fitting:
+        try_overfit = ask_confirm("Try to add more than the emote set fits?", default=False)
+        if not try_overfit:
             non_conflicting_emotes = non_conflicting_emotes[:space_available]
 
     if len(non_conflicting_emotes) == 0:
@@ -265,7 +272,8 @@ def main():
         copy_emotes(token, emotes_to_copy, target_emote_set)
 
     except KeyboardInterrupt:
-        sys.exit(0)
+        print_info("\nInterrupted by user. Exiting...")
+        return
 
     except Exception:
         print_traceback()

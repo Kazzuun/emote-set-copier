@@ -5,10 +5,16 @@ from pathlib import Path
 import re
 import time
 
+from platformdirs import user_config_dir
+
 from .console import print_warning
 
+APP_NAME = "emote_set_copier"
+CONFIG_DIR_PATH = Path(user_config_dir(APP_NAME))
+TOKEN_FILE_PATH = CONFIG_DIR_PATH / "7tv_token.txt"
 
-def load_token(filename: str) -> str | None:
+
+def load_token() -> str | None:
     """
     Load a token from a file.
 
@@ -18,18 +24,16 @@ def load_token(filename: str) -> str | None:
     Returns:
         The token if found, otherwise None.
     """
-    token_path = Path(__file__).parent.parent / filename
-
-    if not token_path.exists():
+    if not TOKEN_FILE_PATH.exists():
         return None
 
-    with Path.open(token_path, "r") as file:
+    with Path.open(TOKEN_FILE_PATH, "r") as file:
         token = file.readline().strip()
 
     return token if token else None
 
 
-def save_token(token: str, filename: str) -> None:
+def save_token(token: str) -> None:
     """
     Save a token to a file.
 
@@ -37,9 +41,10 @@ def save_token(token: str, filename: str) -> None:
         token: The token to save.
         filename: The name of the file where the token is stored.
     """
-    token_path = Path(__file__).parent.parent / filename
+    if not CONFIG_DIR_PATH.exists():
+        CONFIG_DIR_PATH.mkdir(parents=True, exist_ok=True)
 
-    with Path.open(token_path, "w") as file:
+    with Path.open(TOKEN_FILE_PATH, "w") as file:
         file.write(token.strip())
 
 
