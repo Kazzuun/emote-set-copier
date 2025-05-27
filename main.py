@@ -1,310 +1,276 @@
-import base64
-import json
-import os
-import re
 import sys
 import time
 
-from dotenv import load_dotenv
-import requests
-
-from models import EmoteSet, User
-
-
-ENDPOINT = "https://7tv.io/v3"
-
-
-def emote_set_from_id(emote_set_id: str) -> EmoteSet | None:
-    url = f"{ENDPOINT}/emote-sets/{emote_set_id}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        print(f"Something went wrong fetching an emote set: {e}")
-        sys.exit(1)
-    result = response.json()
-    return EmoteSet(**result)
+from app.seventv import add_emote, emote_set_from_id, remove_emote
+from app.console import (
+    print_info,
+    print_success,
+    print_warning,
+    print_error,
+    print_traceback,
+    ask_question,
+    ask_confirm,
+    progress_bar,
+)
+from app.errors import CapacityError, ConflictError, EmoteNotFoundError, OtherError, RestError, UnprivilegedError
+from app.models import EmoteSet, EmoteSetEmote
+from app.utils import load_token, save_token, is_valid_id, user_id_from_token
 
 
-def user_from_id(seventv_user_id: str) -> User | None:
-    url = f"{ENDPOINT}/users/{seventv_user_id}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        print(f"Something went wrong fetching an emote set: {e}")
-        sys.exit(1)
-    result = response.json()
-    return User(**result)
-
-
-def add_emote(token: str, emote_set_id: str, emote_id: str, name: str) -> None:
-    query = """
-        mutation ChangeEmoteInSet($id: ObjectID! $action: ListItemAction! $emote_id: ObjectID!, $name: String) {
-            emoteSet(id: $id) {
-                emotes(id: $emote_id action: $action, name: $name) {
-                    id
-                    name
-                }
-            }
-        }
+def get_user_token_and_id() -> tuple[str, str]:
     """
-    variables = {
-        "id": emote_set_id,
-        "action": "ADD",
-        "emote_id": emote_id,
-        "name": name,
-    }
-    payload = {"query": query, "variables": variables}
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    url = f"{ENDPOINT}/gql"
-    try:
-        response = requests.post(url=url, json=payload, headers=headers)
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        print(f"Something went wrong adding an emote: {e}")
-        sys.exit(1)
-    data = response.json()
-    if "errors" in data:
-        print(f"An error occured while adding an emote: {data['errors'][0]['message']}")
-        sys.exit(1)
+    Get the user's 7tv token and user ID. If the token is already saved, load it.
+    Otherwise, prompt the user for their token.
 
-
-def create_emote_set(token: str, name: str, user_id: str) -> str:
-    query = """
-        mutation CreateEmoteSet($user_id: ObjectID!, $data: CreateEmoteSetInput!) {
-            createEmoteSet(user_id: $user_id, data: $data) {
-                id
-                name
-                capacity
-                owner {
-                    id
-                    display_name
-                    style {
-                        color
-                    }
-                    avatar_url
-                }
-                emotes {
-                    id
-                    name
-                }
-            }
-        }
+    Returns:
+        A tuple containing the user's 7tv token and their user ID.
     """
-    variables = {"data": {"name": name}, "user_id": user_id}
-    payload = {"query": query, "variables": variables}
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    url = f"{ENDPOINT}/gql"
-    try:
-        response = requests.post(url=url, json=payload, headers=headers)
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        print(f"Something went wrong creating an emote set: {e}")
-        sys.exit(1)
-    data = response.json()
-    if "errors" in data:
-        print(
-            f"An error occured while creating an emote set: {data['errors'][0]['message']}"
-        )
-        sys.exit(1)
-    return data["data"]["createEmoteSet"]["id"]
+    token_file_name = "token.txt"
+    token = load_token(token_file_name)
+
+    if token is not None:
+        print_info(f"Loading token from {token_file_name}...")
+        seventv_user_id = user_id_from_token(token)
+        if seventv_user_id is not None:
+            print_success(f"Token loaded from {token_file_name}.")
+            return (token, seventv_user_id)
+
+    while True:
+        token = ask_question("What is your 7tv token?")
+        if token == "":
+            print_warning("Please provide a token.")
+            continue
+
+        seventv_user_id = user_id_from_token(token)
+        if seventv_user_id is None:
+            continue
+
+        save = ask_confirm(f"Save the token to {token_file_name} for easy access?")
+        if save:
+            save_token(token, token_file_name)
+            print_success(f"Token saved to {token_file_name}.")
+        else:
+            print_info("Token not saved.")
+
+        return (token, seventv_user_id)
 
 
-def update_emote_set(token: str, name: str, capacity: int, emote_set_id: str) -> None:
-    query = """
-        mutation UpdateEmoteSet($id: ObjectID!, $data: UpdateEmoteSetInput!) {
-            emoteSet(id: $id) {
-                update(data: $data) {
-                    id,
-                    name
-                }
-            }
-        }
+def get_origin_emote_set() -> EmoteSet:
     """
-    variables = {
-        "data": {"name": name, "capacity": capacity, "origins": None},
-        "id": emote_set_id,
-    }
-    payload = {"query": query, "variables": variables}
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    url = f"{ENDPOINT}/gql"
-    try:
-        response = requests.post(url=url, json=payload, headers=headers)
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        print(f"Something went wrong updating emote set: {e}")
-        sys.exit(1)
-    data = response.json()
-    if "errors" in data:
-        print(
-            f"An error occured while updating emote set: {data['errors'][0]['message']}"
-        )
-        sys.exit(1)
+    Prompt the user for the ID of the emote set they want to copy from. THe origin emote set must not be empty.
 
-
-def is_valid_id(id: str) -> bool:
-    return bool(re.compile(r"^[0-9a-fA-F]{24}$").match(id)) or id == "global"
-
-
-def get_user_id_from_token() -> str:
-    if "TOKEN" not in os.environ or os.environ["TOKEN"] == "":
-        token = input("Your 7tv token: ")
-        with open(".env", "w") as file:
-            file.write(f"TOKEN={token}")
-        load_dotenv()
-    else:
-        token = os.environ["TOKEN"]
-    token_payload = json.loads(base64.b64decode(token.split(".")[1] + "=="))
-    expiration_time = token_payload["exp"]
-    if expiration_time < time.time():
-        print("7tv token is expired")
-        sys.exit(1)
-    seventv_user_id = token_payload["u"]
-    return seventv_user_id
-
-
-def get_copied_emote_set() -> EmoteSet:
+    Returns:
+        The EmoteSet object corresponding to the provided ID.
+    """
     while True:
-        emote_set_id = input("What is the id of the emote set you want to copy? ")
-        if is_valid_id(emote_set_id):
-            from_emote_set = emote_set_from_id(emote_set_id)
-            if from_emote_set is None:
-                print("Emote set not found.")
-            else:
-                return from_emote_set
-        else:
-            print("Invalid id")
+        emote_set_id = ask_question("What is the ID of the emote set you want to copy?")
+        if not is_valid_id(emote_set_id):
+            print_warning("Invalid ID format. Please provide a valid ID.")
+            continue
 
+        from_emote_set = emote_set_from_id(emote_set_id)
+        if from_emote_set is None:
+            print_warning("Origin emote set was not found. Please provide a valid ID.")
+            continue
 
-def get_target_user(own_seventv_id: str) -> User:
-    while True:
-        target_user_id = input(
-            "What is the id of the user you want to copy the emote set for? Leave blank for self. "
+        if from_emote_set.emotes.total_count == 0:
+            print_warning("Origin emote set has no emotes. Please provide a different ID.")
+            continue
+
+        print_success(
+            f"Found origin emote set: '{from_emote_set.name}' ({from_emote_set.emotes.total_count}/{from_emote_set.capacity})"
         )
-        if target_user_id == "":
-            target_user_id = own_seventv_id
-            target_user = user_from_id(target_user_id)
-            if target_user is None:
-                print("User not found.")
-            else:
-                if not target_user.is_subscribed():
-                    print(
-                        "You are not subscribed so zero-width emotes won't be copied."
-                    )
-                return target_user
-        elif is_valid_id(target_user_id):
-            target_user = user_from_id(target_user_id)
-            if target_user is None:
-                print("User not found.")
-            elif (
-                own_seventv_id not in [editor.id for editor in target_user.editors]
-                and own_seventv_id != target_user_id
-            ):
-                print("You aren't an editor of that user.")
-            else:
-                if not target_user.is_subscribed():
-                    print(
-                        "Target user isn't subscribed so zero-width emotes won't be copied."
-                    )
-                return target_user
-        else:
-            print("Invalid id.")
+        return from_emote_set
 
 
-def get_target_emote_set(token: str, target_user: User) -> EmoteSet:
+def get_target_emote_set(origin_set: EmoteSet, seventv_user_id: str) -> EmoteSet:
+    """
+    Prompt the user for the ID of the emote set they want to copy into. The target emote set must not be the same as the origin emote set
+    and the user must be an editor of the target emote set.
+
+    Returns:
+        The EmoteSet object corresponding to the provided ID.
+    """
     while True:
-        target_emote_set_id = input(
-            "What is the id of the emote set you want to copy into? Leave blank to create a new one. "
+        target_emote_set_id = ask_question("What is the ID of the emote set you want to copy into?")
+        if not is_valid_id(target_emote_set_id):
+            print_warning("Invalid ID format. Please provide a valid ID.")
+            continue
+
+        target_emote_set = emote_set_from_id(target_emote_set_id)
+        if target_emote_set is None:
+            print_warning("Target emote set was not found. Please provide a valid ID.")
+            continue
+
+        if target_emote_set.id == origin_set.id:
+            print_warning("Target emote set cannot be the same as the origin emote set. Please provide a different ID.")
+            continue
+
+        if target_emote_set.owner.id != seventv_user_id and seventv_user_id not in target_emote_set.owner.editors:
+            print_warning(
+                "You are not an editor of the target emote set. Please provide a different ID or ask the owner to add you as an editor."
+            )
+            continue
+
+        print_success(
+            f"Found target emote set: '{target_emote_set.name}' ({target_emote_set.emotes.total_count}/{target_emote_set.capacity})"
         )
-        if target_emote_set_id == "":
-            while True:
-                set_name = input("What do you want to name the new emote set? ")
-                if set_name != "":
-                    break
-                else:
-                    print("Please provide a valid name for the emote set.")
-            target_emote_set_id = create_emote_set(token, set_name, target_user.id)
-            try:
-                capacity = max(emote_set.capacity for emote_set in target_user.emote_sets)
-            except ValueError:
-                capacity = 600
-            update_emote_set(token, set_name, capacity, target_emote_set_id)
-            target_emote_set = emote_set_from_id(target_emote_set_id)
-            if target_emote_set is None:
-                print("Failed to find the new emote set. Try again.")
-            else:
-                return target_emote_set
-        elif target_emote_set_id not in [
-            emote_set.id for emote_set in target_user.emote_sets
-        ]:
-            print("User doesn't have an emote set matching the given id.")
-        elif is_valid_id(target_emote_set_id):
-            target_emote_set = emote_set_from_id(target_emote_set_id)
-            if target_emote_set is None:
-                print("Target emote set was not found.")
-            else:
-                return target_emote_set
-        else:
-            print("Invalid id.")
+        return target_emote_set
 
 
-def copy_emotes(
-    token: str, from_emote_set: EmoteSet, target_user: User, target_emote_set: EmoteSet
-) -> None:
-    emotes_to_be_added = [
+def process_emotes_to_copy(from_emote_set: EmoteSet, target_emote_set: EmoteSet) -> list[EmoteSetEmote]:
+    """
+    Process the emotes to copy from the origin emote set to the target emote set.
+    Filters out private emotes and emotes that are the exact same. Prompts the user whether to replace conflicting emotes
+    and to include emotes that exceed the emote set capacity.
+
+    Args:
+        from_emote_set: The emote set to copy emotes from.
+        target_emote_set: The emote set to copy emotes into.
+
+    Returns:
+        A list of EmoteSetEmote objects that can be copied to the target emote set. May include emotes that have conflicting names
+        with existing emotes in the target emote set, depending on user input.
+    """
+    # Ignore private emotes
+    non_private_emotes = [emote for emote in from_emote_set.emotes.items if not emote.data.flags.private]
+
+    private = from_emote_set.emotes.total_count - len(non_private_emotes)
+    if private > 0:
+        print_info(
+            f"Found {private} private emote{'s' if private != 1 else ''} in the origin emote set. They will be ignored."
+        )
+
+    # Ignore emotes that are the exact same in the target emote set
+    new_emotes = [
         emote
-        for emote in from_emote_set.emotes
-        if not emote.data.flags.private
-        and emote.name not in set(emote.name for emote in target_emote_set.emotes)
+        for emote in non_private_emotes
+        if (emote.id, emote.alias) not in [(e.id, e.alias) for e in target_emote_set.emotes.items]
     ]
-    if not target_user.is_subscribed():
-        emotes_to_be_added = [
-            emote for emote in emotes_to_be_added if not emote.data.flags.zero_width
-        ]
-
-    space_available = target_emote_set.capacity - target_emote_set.emote_count
-    nof_emotes_to_copy = len(emotes_to_be_added)
-    if space_available < nof_emotes_to_copy:
-        proceed = input(
-            f"The number of emotes to be added exceeds the space available in the target emote set ({nof_emotes_to_copy}>{space_available}). Some emotes won't fit. Proceed? (y/n) "
+    exactly_same = len(non_private_emotes) - len(new_emotes)
+    if exactly_same > 0:
+        print_info(
+            f"Found {exactly_same} emote{'s' if exactly_same != 1 else ''} that are exactly the same in the target emote set. They will be ignored."
         )
-        if proceed.lower() not in ["y", "yes"]:
-            print("Exiting...")
-            sys.exit(0)
-    print(
-        f"Adding {nof_emotes_to_copy} from the set '{from_emote_set.name}' ({from_emote_set.id}) to the set '{target_emote_set.name}' ({target_emote_set.id})"
-    )
 
-    for i, emote in enumerate(emotes_to_be_added, 1):
-        add_emote(token, target_emote_set.id, emote.id, emote.name)
-        if i % 25 == 0:
-            print(f"Progress: {i}/{nof_emotes_to_copy}")
-    print("All emotes successfully copied!")
+    # Ignore emotes that have the same name
+    non_conflicting_emotes = [
+        emote for emote in non_private_emotes if emote.alias not in [e.alias for e in target_emote_set.emotes.items]
+    ]
+    conflicting = len(new_emotes) - len(non_conflicting_emotes)
+    if conflicting > 0:
+        print_info(f"Found {conflicting} conflicting emote{'s' if conflicting != 1 else ''} in the target emote set.")
+        force = ask_confirm(
+            f"Do you want to replace {'them' if conflicting != 1 else 'it'} with the copied emote{'s' if conflicting != 1 else ''}?"
+        )
+        if force:
+            non_conflicting_emotes = new_emotes
+
+    # Ignore emotes that would exceed the target emote set's capacity
+    space_available = target_emote_set.capacity - target_emote_set.emotes.total_count
+    emotes_to_copy = len(non_conflicting_emotes)
+    if space_available < emotes_to_copy:
+        print_info(
+            f"The number of emotes to be copied exceeds the space available in the target emote set ({emotes_to_copy}>{space_available})."
+        )
+        only_fitting = ask_confirm("Only add emotes that fit?", default=True)
+        if only_fitting:
+            non_conflicting_emotes = non_conflicting_emotes[:space_available]
+
+    if len(non_conflicting_emotes) == 0:
+        print_warning("There are no valid emotes left to copy. Exiting...")
+        sys.exit(0)
+
+    return non_conflicting_emotes
+
+
+def copy_emotes(token: str, emotes_to_copy: list[EmoteSetEmote], target_emote_set: EmoteSet) -> None:
+    """
+    Copy emotes from the origin emote set to the target emote set.
+    Handles the copying of emotes, including removing conflicting emotes from the target set
+    before adding the new emotes. It uses a progress bar to show the copying process.
+
+    Args:
+        token: The user's 7tv token.
+        emotes_to_copy: A list of EmoteSetEmote objects to copy to the target emote set.
+        target_emote_set: The EmoteSet object to copy the emotes into.
+    """
+    total = len(emotes_to_copy)
+    start = ask_confirm(f"There are {total} emotes to copy. Start the copying process?", default=True)
+    if not start:
+        sys.exit(0)
+
+    with progress_bar("Copying emotes") as progress:
+        task = progress.add_task("Copying", total=total)
+
+        for emote in emotes_to_copy:
+            skip_removal = False
+            attempts = 0
+            while True:
+                try:
+                    # All conflicting emotes should be removed before adding the new emote
+                    conflicting_emote = next((e for e in target_emote_set.emotes.items if e.alias == emote.alias), None)
+                    if conflicting_emote is not None and not skip_removal:
+                        try:
+                            remove_emote(token, target_emote_set.id, conflicting_emote.id)
+                        except EmoteNotFoundError:
+                            print_warning(
+                                f"Emote '{conflicting_emote.alias}' not found in the target set. Skipping removal..."
+                            )
+                            skip_removal = True
+
+                    add_emote(token, target_emote_set.id, emote.id, emote.alias)
+                    break
+
+                except (RestError, OtherError):
+                    attempts += 1
+                    if attempts >= 5:
+                        print_error("Failed to copy emote set. Exiting...")
+                        print_traceback()
+                        sys.exit(1)
+
+                    sleep_time = 45 - (15 if attempts > 1 else 0)
+                    print_error(f"Failed to add emote '{emote.alias}'. Retrying in {sleep_time}s...")
+                    time.sleep(sleep_time)
+
+                except EmoteNotFoundError:
+                    print_warning(f"Emote '{emote.alias}' ({emote.id}) not found. Skipping...")
+                    break
+
+                except ConflictError:
+                    print_warning(f"Unexpected conflict while adding emote '{emote.alias}'. Skipping...")
+                    break
+
+                except UnprivilegedError:
+                    print_error("You don't have permission to modify the target emote set. Exiting...")
+                    sys.exit(1)
+
+                except CapacityError:
+                    print_error("Target emote set is full. Cannot add more emotes. Exiting...")
+                    sys.exit(0)
+
+            progress.update(task, advance=1)
+
+    print_success("All emotes successfully copied!")
 
 
 def main():
-    seventv_user_id = get_user_id_from_token()
-    token = os.environ["TOKEN"]
-    from_emote_set = get_copied_emote_set()
-    target_user = get_target_user(seventv_user_id)
-    target_emote_set = get_target_emote_set(token, target_user)
-    copy_emotes(token, from_emote_set, target_user, target_emote_set)
+    try:
+        token, seventv_user_id = get_user_token_and_id()
+
+        from_emote_set = get_origin_emote_set()
+        target_emote_set = get_target_emote_set(from_emote_set, seventv_user_id)
+        emotes_to_copy = process_emotes_to_copy(from_emote_set, target_emote_set)
+
+        copy_emotes(token, emotes_to_copy, target_emote_set)
+
+    except KeyboardInterrupt:
+        sys.exit(0)
+
+    except Exception:
+        print_traceback()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    load_dotenv()
     main()
